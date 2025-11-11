@@ -10,6 +10,62 @@ The goal is to reduce peak memory usage and begin sending data to the client ear
 
 ---
 
+## Principle
+
+```mermaid
+sequenceDiagram
+    participant Client as HTTP Client
+    participant Stream as ChannelStream
+    participant Channel as Channel<IMemoryOwner<byte>>
+    participant Producer as WriteStreamAsync
+    participant Pool as MemoryPool.Shared
+    participant Source as IAsyncEnumerable<T>
+
+    Client->>Stream: Read() request
+    activate Stream
+    
+    Producer->>Channel: Write "[" (OpenArray)
+    Producer->>Source: MoveNextAsync()
+    activate Source
+    
+    loop For each item
+        Source-->>Producer: yield item
+        Producer->>Pool: Rent(length)
+        Pool-->>Producer: IMemoryOwner<byte>
+        
+        Note over Producer: Serialize item to buffer<br/>Copy to rented memory
+        
+        alt Not first item
+            Producer->>Channel: Write ","
+        end
+        
+        Producer->>Channel: Write OwnedArray(item bytes)
+        
+        Channel-->>Stream: Read chunk
+        Stream-->>Client: HTTP chunk
+        
+        Stream->>Pool: Dispose/Return buffer
+        Note over Pool: Buffer back in pool
+        
+        Producer->>Source: MoveNextAsync()
+    end
+    
+    deactivate Source
+    Producer->>Channel: Write "]" (CloseArray)
+    Producer->>Channel: Complete()
+    
+    Channel-->>Stream: Final chunks
+    Stream-->>Client: Final HTTP chunks
+    
+    Stream->>Channel: Close
+    deactivate Stream
+    
+    Note over Client,Pool: Memory reused throughout,<br/>no large allocations
+```
+
+
+---
+
 ## Projects
 - `fnstream/` — Azure Functions (isolated worker) app with two endpoints implemented in `MyFunction`.
 - `bench/` — BenchmarkDotNet micro‑benchmarks that compare buffered vs streaming serialization using the same data source.
